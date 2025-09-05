@@ -1,39 +1,63 @@
 # app.py
-from flask import Flask, request, redirect, url_for, render_template_string, flash, Response
+from flask import Flask, request, redirect, url_for, render_template_string, Response
 import sqlite3
 from datetime import datetime
 import os
-import csv
 
 app = Flask(__name__)
 app.secret_key = "replace_this_with_random_secret"
 
 DB_PATH = "readings.db"
 
-THRESH = {
+DEFAULT_THRESH = {
     "pH_low": 6.5,
     "pH_high": 8.5,
     "turbidity_high": 1.0,
     "rfc_low": 0.2,
 }
 
+# --- DB helpers ---
 def init_db():
-    if not os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE readings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT,
-                pH REAL,
-                turbidity REAL,
-                rfc REAL,
-                tds REAL,
-                status TEXT
-            );
-        """)
-        conn.commit()
-        conn.close()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT,
+            pH REAL,
+            turbidity REAL,
+            rfc REAL,
+            tds REAL,
+            status TEXT
+        );
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS thresholds (
+            key TEXT PRIMARY KEY,
+            value REAL
+        );
+    """)
+    # Insert default thresholds if not present
+    for k, v in DEFAULT_THRESH.items():
+        c.execute("INSERT OR IGNORE INTO thresholds (key, value) VALUES (?, ?)", (k, v))
+    conn.commit()
+    conn.close()
+
+def get_thresholds():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT key, value FROM thresholds")
+    rows = c.fetchall()
+    conn.close()
+    return {k: v for k, v in rows}
+
+def update_thresholds(new_values):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for k, v in new_values.items():
+        c.execute("UPDATE thresholds SET value = ? WHERE key = ?", (v, k))
+    conn.commit()
+    conn.close()
 
 def save_reading(pH, turbidity, rfc, tds, status):
     conn = sqlite3.connect(DB_PATH)
@@ -59,24 +83,25 @@ def get_all_readings():
     conn.close()
     return rows
 
-def evaluate_alert(pH, turbidity, rfc):
+def evaluate_alert(pH, turbidity, rfc, thresh):
     issues = []
     severity = "OK"
     if pH is not None:
-        if pH < THRESH["pH_low"] or pH > THRESH["pH_high"]:
+        if pH < thresh["pH_low"] or pH > thresh["pH_high"]:
             issues.append(f"pH out of range ({pH})")
             severity = "HIGH"
     if turbidity is not None:
-        if turbidity > THRESH["turbidity_high"]:
+        if turbidity > thresh["turbidity_high"]:
             issues.append(f"Turbidity high ({turbidity} NTU)")
             if severity != "HIGH":
                 severity = "MEDIUM"
     if rfc is not None:
-        if rfc < THRESH["rfc_low"]:
+        if rfc < thresh["rfc_low"]:
             issues.append(f"Low chlorine ({rfc} mg/L)")
             severity = "CRITICAL"
     return severity, issues
 
+# --- Routes ---
 TEMPLATE = """
 <!doctype html>
 <html lang="en">
@@ -278,6 +303,17 @@ TEMPLATE = """
   <div class="small">
     ⚙️ Thresholds: pH [{{ thresh.pH_low }} - {{ thresh.pH_high }}], Turbidity > {{ thresh.turbidity_high }} NTU, Chlorine &lt; {{ thresh.rfc_low }} mg/L → alert
   </div>
+  <h3>⚙️ Threshold Settings</h3>
+<div class="card">
+  <form method="post" action="{{ url_for('update_thresh') }}">
+    <label>pH Low</label><input type="number" step="0.01" name="pH_low" value="{{ thresh.pH_low }}" required>
+    <label>pH High</label><input type="number" step="0.01" name="pH_high" value="{{ thresh.pH_high }}" required>
+    <label>Turbidity High</label><input type="number" step="0.01" name="turbidity_high" value="{{ thresh.turbidity_high }}" required>
+    <label>Chlorine Low</label><input type="number" step="0.01" name="rfc_low" value="{{ thresh.rfc_low }}" required>
+    <button class="btn" type="submit">💾 Update Thresholds</button>
+  </form>
+</div>
+
 </body>
 </html>
 
@@ -286,13 +322,14 @@ TEMPLATE = """
 @app.route("/")
 def index():
     readings = get_last_readings(10)
+    thresh = get_thresholds()
     alert = None
     alert_level = request.args.get("alert_level")
     if alert_level:
         issues = request.args.getlist("issue")
         css_map = {"OK": "ok", "MEDIUM": "medium", "HIGH": "high", "CRITICAL": "critical"}
         alert = { "level": alert_level, "issues": issues, "css": css_map.get(alert_level, "ok") }
-    return render_template_string(TEMPLATE, readings=readings, alert=alert, thresh=THRESH)
+    return render_template_string(TEMPLATE, readings=readings, alert=alert, thresh=thresh)
 
 @app.route("/submit", methods=["POST"])
 def submit():
@@ -307,7 +344,8 @@ def submit():
         tds = float(tds_val) if tds_val not in (None, "") else None
     except: tds = None
 
-    level, issues = evaluate_alert(pH, turbidity, rfc)
+    thresh = get_thresholds()
+    level, issues = evaluate_alert(pH, turbidity, rfc, thresh)
     save_reading(pH, turbidity, rfc, tds, level)
 
     if issues:
@@ -330,7 +368,22 @@ def export_csv():
     return Response(generate(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment;filename=readings.csv"})
 
+@app.route("/update_thresholds", methods=["POST"])
+def update_thresh():
+    try:
+        new_values = {
+            "pH_low": float(request.form.get("pH_low")),
+            "pH_high": float(request.form.get("pH_high")),
+            "turbidity_high": float(request.form.get("turbidity_high")),
+            "rfc_low": float(request.form.get("rfc_low")),
+        }
+        update_thresholds(new_values)
+    except:
+        pass
+    return redirect(url_for("index"))
+
 if __name__ == "__main__":
     init_db()
     app.run(debug=True, host="0.0.0.0", port=5000)
+
 
