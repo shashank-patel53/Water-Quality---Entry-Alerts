@@ -19,8 +19,8 @@ DEFAULT_THRESH = {
 # --- Twilio Config ---
 TWILIO_ACCOUNT_SID = "your_account_sid"
 TWILIO_AUTH_TOKEN = "your_auth_token"
-TWILIO_PHONE_NUMBER = "+1234567890"  # Twilio sender
-TARGET_PHONE_NUMBER = "+91xxxxxxxxxx"  # Your number
+TWILIO_PHONE_NUMBER = "+1234567890"
+TARGET_PHONE_NUMBER = "+91xxxxxxxxxx"
 
 def send_sms_alert(level, issues, timestamp):
     if level in ["CRITICAL", "HIGH"]:
@@ -35,7 +35,6 @@ def send_sms_alert(level, issues, timestamp):
         except Exception as e:
             print("SMS failed:", e)
 
-# --- Geocoding helper ---
 def get_lat_lon_from_city(city_name):
     try:
         geolocator = Nominatim(user_agent="water_quality_app")
@@ -99,7 +98,7 @@ def save_reading(pH, turbidity, rfc, tds, status, lat, lon):
               (ts, pH, turbidity, rfc, tds, status, lat, lon))
     conn.commit()
     conn.close()
-    return ts  # return timestamp for alert
+    return ts
 
 def get_last_readings(limit=10):
     conn = sqlite3.connect(DB_PATH)
@@ -137,29 +136,33 @@ def evaluate_alert(pH, turbidity, rfc, thresh):
             severity = "CRITICAL"
     return severity, issues
 
-# --- Templates ---
+# --- Template with multi-page navbar + colored markers ---
 TEMPLATE = """
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Water Quality - Entry, Alerts & Map</title>
+  <title>Water Quality - Map & Alerts</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
   <style>
-    body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg,#00c6ff,#0072ff); color:#333; }
-    h2, h3 { color:#fff; text-shadow:1px 1px 2px #222; }
+    body { font-family:'Segoe UI',sans-serif; margin:0; padding:20px; background:linear-gradient(135deg,#00c6ff,#0072ff); color:#333;}
+    nav { background:#0072ff; padding:12px 20px; display:flex; gap:20px;}
+    nav a { color:#fff; text-decoration:none; font-weight:bold;}
+    nav a:hover { text-decoration:underline;}
+    h2,h3 { color:#fff; text-shadow:1px 1px 2px #222; }
+    .container { padding:20px; }
     .card { background:rgba(255,255,255,0.92); border-radius:14px; box-shadow:0 8px 22px rgba(0,0,0,0.25); padding:20px; margin-bottom:20px; transition:transform .3s; }
-    .card:hover { transform:scale(1.01); }
-    label { font-weight:600; display:block; margin-top:12px; }
-    input { width:100%; padding:10px; margin-top:6px; border:1px solid #ccc; border-radius:8px; }
-    .btn { background:linear-gradient(to right,#ff512f,#dd2476); color:white; border:none; border-radius:8px; padding:12px 18px; cursor:pointer; font-weight:bold; margin-top:16px; }
-    .btn:hover { opacity:0.9; }
-    table { width:100%; border-collapse:collapse; margin-top:10px; background:#fff; border-radius:8px; overflow:hidden; }
-    th { background:#0072ff; color:white; padding:10px; text-align:left; }
-    td { padding:10px; border-bottom:1px solid #eee; }
+    .card:hover { transform:scale(1.01);}
+    label { font-weight:600; display:block; margin-top:12px;}
+    input { width:100%; padding:10px; margin-top:6px; border:1px solid #ccc; border-radius:8px;}
+    .btn { background:linear-gradient(to right,#ff512f,#dd2476); color:white; border:none; border-radius:8px; padding:12px 18px; cursor:pointer; font-weight:bold; margin-top:16px;}
+    .btn:hover { opacity:0.9;}
+    table { width:100%; border-collapse:collapse; margin-top:10px; background:#fff; border-radius:8px; overflow:hidden;}
+    th { background:#0072ff; color:white; padding:10px; text-align:left;}
+    td { padding:10px; border-bottom:1px solid #eee;}
     #map { width:100%; height:450px; border-radius:12px; margin-top:10px; }
-    .flash { padding:12px; border-radius:8px; margin-bottom:20px; font-weight:bold; }
+    .flash { padding:12px; border-radius:8px; margin-bottom:20px; font-weight:bold;}
     .OK { background:#d4edda; color:#155724; }
     .MEDIUM { background:#fff3cd; color:#856404; }
     .HIGH { background:#f8d7da; color:#721c24; }
@@ -167,82 +170,87 @@ TEMPLATE = """
   </style>
 </head>
 <body>
-  <h2>💧 Water Quality — City Based</h2>
+<nav>
+    <a href="{{ url_for('index') }}">🏠 Dashboard</a>
+    <a href="{{ url_for('index') }}#add">➕ Add Reading</a>
+    <a href="{{ url_for('index') }}#threshold">⚙️ Update Thresholds</a>
+    <a href="{{ url_for('export_csv') }}">📥 Export CSV</a>
+</nav>
+<div class="container">
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      {% for category, msg in messages %}
-        <div class="flash {{ category }}">⚠️ {{ msg }}</div>
-      {% endfor %}
-    {% endif %}
-  {% endwith %}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, msg in messages %}
+      <div class="flash {{ category }}">⚠️ {{ msg }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
 
-  <div class="card">
-    <form method="post" action="{{ url_for('submit') }}">
-      <label>City Name</label>
-      <input type="text" name="city" placeholder="Enter city e.g. Delhi" required>
-      <label>pH</label>
-      <input type="number" step="0.01" name="pH" required>
-      <label>Turbidity (NTU)</label>
-      <input type="number" step="0.01" name="turbidity" required>
-      <label>Residual Free Chlorine (mg/L)</label>
-      <input type="number" step="0.01" name="rfc" required>
-      <label>TDS (ppm) - optional</label>
-      <input type="number" step="0.1" name="tds">
-      <button class="btn" type="submit">🚀 Submit</button>
-    </form>
-  </div>
+<h2 id="add">💧 Add Water Reading</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('submit') }}">
+    <label>City Name</label><input type="text" name="city" placeholder="Enter city e.g. Delhi" required>
+    <label>pH</label><input type="number" step="0.01" name="pH" required>
+    <label>Turbidity (NTU)</label><input type="number" step="0.01" name="turbidity" required>
+    <label>Residual Free Chlorine (mg/L)</label><input type="number" step="0.01" name="rfc" required>
+    <label>TDS (ppm) - optional</label><input type="number" step="0.1" name="tds">
+    <button class="btn" type="submit">🚀 Submit</button>
+  </form>
+</div>
 
-  <div class="card">
-    <h3>⚙️ Update Thresholds</h3>
-    <form method="post" action="{{ url_for('update_thresholds_route') }}">
-      <label>pH Low</label>
-      <input type="number" step="0.1" name="pH_low" value="{{ thresh['pH_low'] }}" required>
-      <label>pH High</label>
-      <input type="number" step="0.1" name="pH_high" value="{{ thresh['pH_high'] }}" required>
-      <label>Turbidity High</label>
-      <input type="number" step="0.1" name="turbidity_high" value="{{ thresh['turbidity_high'] }}" required>
-      <label>Chlorine Low</label>
-      <input type="number" step="0.1" name="rfc_low" value="{{ thresh['rfc_low'] }}" required>
-      <button class="btn" type="submit">💾 Update</button>
-    </form>
-  </div>
+<h3 id="threshold">⚙️ Update Thresholds</h3>
+<div class="card">
+  <form method="post" action="{{ url_for('update_thresholds_route') }}">
+    <label>pH Low</label><input type="number" step="0.1" name="pH_low" value="{{ thresh['pH_low'] }}" required>
+    <label>pH High</label><input type="number" step="0.1" name="pH_high" value="{{ thresh['pH_high'] }}" required>
+    <label>Turbidity High</label><input type="number" step="0.1" name="turbidity_high" value="{{ thresh['turbidity_high'] }}" required>
+    <label>Chlorine Low</label><input type="number" step="0.1" name="rfc_low" value="{{ thresh['rfc_low'] }}" required>
+    <button class="btn" type="submit">💾 Update</button>
+  </form>
+</div>
 
-  <div class="card">
-    <a href="{{ url_for('export_csv') }}"><button class="btn">📥 Export CSV</button></a>
-  </div>
+<div class="card">
+  <div id="map"></div>
+</div>
 
-  <div class="card">
-    <div id="map"></div>
-  </div>
+<h3>📊 Recent Readings</h3>
+<div class="card">
+  <table>
+    <thead><tr><th>Time</th><th>pH</th><th>Turbidity</th><th>Chlorine</th><th>TDS</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for r in readings %}
+      <tr>
+        <td>{{ r[0] }}</td>
+        <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td>
+        <td>{{ r[4] if r[4] else '-' }}</td><td>{{ r[5] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 
-  <h3>📊 Recent Readings</h3>
-  <div class="card">
-    <table>
-      <thead><tr><th>Time</th><th>pH</th><th>Turbidity</th><th>Chlorine</th><th>TDS</th><th>Status</th></tr></thead>
-      <tbody>
-      {% for r in readings %}
-        <tr>
-          <td>{{ r[0] }}</td>
-          <td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td>
-          <td>{{ r[4] if r[4] else '-' }}</td><td>{{ r[5] }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map').setView([22.9734,78.6569],5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const map=L.map('map').setView([22.9734,78.6569],5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-    fetch('{{ url_for("geojson") }}').then(r=>r.json()).then(g=>{
-      L.geoJSON(g,{
-        pointToLayer:(f,latlng)=>L.circleMarker(latlng,{radius:8,fillColor:'#ff512f',color:'#000',weight:1,fillOpacity:.9})
-          .bindPopup(`<b>Status:</b> ${f.properties.status}<br><b>pH:</b> ${f.properties.pH}`)
-      }).addTo(map);
-    });
-  </script>
+fetch('{{ url_for("geojson") }}').then(r=>r.json()).then(g=>{
+  L.geoJSON(g,{
+    pointToLayer:(f,latlng)=>{
+        let color = 'green';
+        if(f.properties.status=='MEDIUM') color='yellow';
+        else if(f.properties.status=='HIGH') color='orange';
+        else if(f.properties.status=='CRITICAL') color='red';
+        return L.circleMarker(latlng,{
+            radius:8, fillColor: color, color:'#000', weight:1, fillOpacity:0.9
+        }).bindPopup(`<b>Status:</b> ${f.properties.status}<br>
+                      <b>pH:</b> ${f.properties.pH}<br>
+                      <b>Turbidity:</b> ${f.properties.turbidity}<br>
+                      <b>Chlorine:</b> ${f.properties.rfc}`);
+    }
+  }).addTo(map);
+});
+</script>
 </body>
 </html>
 """
@@ -289,6 +297,7 @@ def update_thresholds_route():
         try: new_vals[key]=float(request.form.get(key))
         except: pass
     update_thresholds(new_vals)
+    flash("Thresholds updated ✅", "OK")
     return redirect(url_for("index"))
 
 @app.route("/export_csv")
@@ -309,13 +318,14 @@ def geojson():
         features.append({
           "type":"Feature",
           "geometry":{"type":"Point","coordinates":[lon,lat]},
-          "properties":{"ts":ts,"pH":pH,"turbidity":turbidity,"rfc":rfc,"tds":tds,"status":status,"city":""}
+          "properties":{"ts":ts,"pH":pH,"turbidity":turbidity,"rfc":rfc,"tds":tds,"status":status}
         })
     return jsonify({"type":"FeatureCollection","features":features})
 
 if __name__=="__main__":
     init_db()
     app.run(debug=True,host="0.0.0.0",port=5000)
+
 
 
 
